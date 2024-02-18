@@ -1,7 +1,7 @@
 import socket
 import threading
 import sys
-
+# #3作り始めます
 class UDPClient:
 
     # クライアントの初期化
@@ -60,6 +60,7 @@ class UDPClient:
         self.client_socket.close()
         print("ソケットを閉じました。")
         sys.exit()
+        
 
 
 if __name__ == "__main__":
