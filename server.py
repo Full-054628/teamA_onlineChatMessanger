@@ -1,137 +1,144 @@
-import socket  # Pythonでネットワーク接続を扱うための標準ライブラリ
-import threading  # 複数のスレッドを同時に実行するために使用する（サーバが同時に複数クライアントからのメッセージを処理できるようになる）
-import time
-import sys
+import socket
+import threading
+import json
+import random
+import string
 
 
-class UDPServer:
-    # クラスレベルで定数を定義
-    SERVER_IP = "0.0.0.0"
-    SERVER_PORT = 12345
-    BUFFER_SIZE = 4096
-    INACTIVITY_TIMEOUT = 30  # クライアントのタイムアウト時間（秒）
-    ROOM_NAME_SIZE = 1  # ルーム名のサイズを1バイトに設定
-    TOKEN_SIZE = 1  # トークンのサイズを1バイトに設定
+class ChatServer:
+    # サーバーの設定を初期化
+    def __init__(self, host="0.0.0.0", tcp_port=12346, udp_port=12345):
 
-    def __init__(
-        self, ip="0.0.0.0", port=12345, buffer_size=4096, inactivity_timeout=30
-    ):
-        # サーバーの初期設定
-        self.server_ip = ip
-        self.server_port = port
-        self.buffer_size = buffer_size
-        self.inactivity_timeout = (
-            inactivity_timeout  # クライアントのタイムアウト時間（秒）
+        self.host = host  # サーバーのホストアドレス
+        self.tcp_port = tcp_port  # TCP通信用のポート
+        self.udp_port = udp_port  # UDP通信用のポート
+        self.clients = {}  # クライアントのトークンとアドレスを保持する辞書
+        self.rooms = {}  # チャットルームとその参加者を保持する辞書
+
+        # UDPソケットの設定
+        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.bind((self.host, self.udp_port))
+
+        # TCPソケットの設定
+        self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_socket.bind((self.host, self.tcp_port))
+        self.tcp_socket.listen(5)  # 接続待ちの最大クライアント数を設定
+
+        print(
+            f"チャットサーバーがTCP {self.tcp_port}番ポートとUDP {self.udp_port}番ポートで待機しています。"
         )
-        self.clients = (
-            {}
-        )  # クライアントのリストと最終アクティブ時間を追跡するための辞書
-        self.server_socket = socket.socket(
-            socket.AF_INET, socket.SOCK_DGRAM
-        )  # AF_INETはIPv4ベースのアドレスを使用。SOCK_DGRAMはUDPプロトコル。
-        self.server_socket.bind(
-            (self.server_ip, self.server_port)
-        )  # 作成したソケットを、指定したIPアドレスとポートにバインド
-        print(f"サーバーが起動しました。{self.server_ip}:{self.server_port}")
 
-    def relay_message(self, message, sender_address):
-        # クライアントから受け取ったメッセージを、送信もとアドレス以外の全クライアントに転送
-        for client in list(self.clients.keys()):
-            if client != sender_address:
-                try:
-                    self.server_socket.sendto(message, client)
-                except Exception as e:
-                    print(f"メッセージの転送中にエラーが発生しました: {e}")
+    # TCP接続を処理
+    def handle_tcp_connection(self, client_socket, addr):
+        try:
+            data = client_socket.recv(1024).decode(
+                "utf-8"
+            )  # クライアントからのデータを受信
+            request = json.loads(data)  # JSON形式のデータを辞書に変換
 
-    def validate_token_and_ip(self, token, client_address):
-        # # トークンとIPアドレスの検証ロジックを実装
-        # return token == client_address[0]
+            # リクエストの種類に応じて処理を分岐
+            if request["operation"] == "create":
+                # チャットルーム作成リクエスト
+                response = self.create_room(request, addr)
+            elif request["operation"] == "join":
+                # チャットルーム参加リクエスト
+                response = self.join_room(request, addr)
+            else:
+                # 不正な操作
+                response = {"status": "error", "message": "Invalid operation"}
 
-        # テスト用: ダミートークンのリスト
-        dummy_tokens = [
-            # "dummytoken1234567890abcdefg",
-            # "dummytoken1234567890abcdefg",
-            # "dummytoken1234567890abcdefg",
-            "b",
-            "c",
-            "d",
-        ]
-        # トークンがダミートークンのリストに含まれているかチェック
-        return token.decode("utf-8") in dummy_tokens
+            # レスポンスをクライアントに送信
+            client_socket.sendall(json.dumps(response).encode("utf-8"))
+        except Exception as e:
+            print(f"Error handling TCP connection: {e}")
+        finally:
+            client_socket.close()  # 接続を閉じる
 
-    def handle_client(self):
-        # クライアントからのメッセージを受信し、リレーする
+    # チャットルームを作成
+    def create_room(self, request, addr):
+        room_name = request["room_name"]
+        password = request.get("password", "")
+        if room_name in self.rooms:
+            # 既に存在するルーム名の場合はエラー
+            return {"status": "error", "message": "ルームは既に存在します"}
+
+        token = self.generate_token()  # トークンを生成
+        self.rooms[room_name] = {
+            "password": password,
+            "clients": [token],
+        }  # ルームを追加
+        self.clients[token] = (addr[0], self.udp_port)  # トークンとアドレスを関連付け
+        return {"status": "ok", "token": token}  # トークンを含むレスポンスを返す
+
+    # チャットルームに参加
+    def join_room(self, request, addr):
+        room_name = request["room_name"]
+        password = request.get("password", "")
+        if room_name not in self.rooms or self.rooms[room_name]["password"] != password:
+            # ルームが存在しないかパスワードが間違っている場合はエラー
+            return {"status": "error", "message": "無効なルーム名またはパスワードです"}
+
+        token = self.generate_token()  # トークンを生成
+        self.rooms[room_name]["clients"].append(
+            token
+        )  # ルームの参加者リストにトークンを追加
+        self.clients[token] = (addr[0], self.udp_port)  # トークンとアドレスを関連付け
+        return {"status": "ok", "token": token}  # トークンを含むレスポンスを返す
+
+    # トークンを生成
+    def generate_token(self):
+        return "".join(random.choices(string.ascii_letters + string.digits, k=16))
+
+    def listen_udp(self):
+        # UDPでのメッセージ受信を待機するメソッド
         while True:
-            try:
-                message, client_address = self.server_socket.recvfrom(self.buffer_size)
-                # メッセージの長さをチェック
-                if len(message) < UDPServer.ROOM_NAME_SIZE + UDPServer.TOKEN_SIZE:
-                    print(f"不正なメッセージフォーマット: {client_address}")
-                    continue  # 次のメッセージの処理に移る
+            message, client_addr = self.udp_socket.recvfrom(4096)
+            threading.Thread(
+                target=self.handle_udp_message, args=(message, client_addr)
+            ).start()
 
-                # メッセージからルーム名とトークンを抽出
-                room_name = message[: UDPServer.ROOM_NAME_SIZE]
-                token = message[
-                    UDPServer.ROOM_NAME_SIZE : UDPServer.ROOM_NAME_SIZE
-                    + UDPServer.TOKEN_SIZE
-                ]
+    # UDPメッセージを処理
+    def handle_udp_message(self, message, client_addr):
+        try:
+            # メッセージからトークンと本文を分離
+            token, msg = message.decode("utf-8").split(":", 1)
+            if token in self.clients:
+                # トークンが有効な場合、メッセージをリレー
+                for room_name, room_info in self.rooms.items():
+                    if token in room_info["clients"]:
+                        self.relay_message(room_name, token, msg.encode("utf-8"))
+                        break
+            else:
+                print(f"Invalid token or IP mismatch: {client_addr}")
+        except Exception as e:
+            print(f"Error handling UDP message: {e}")
 
-                # トークンとIPアドレスの検証
-                if self.validate_token_and_ip(token, client_address):
-                    self.clients[client_address] = (
-                        time.time()
-                    )  # クライアントのアドレスと最終アクティブ時間を記録
-                    self.relay_message(message, client_address)
-                else:
-                    print(f"無効なトークンまたはIPアドレス: {client_address}")
-            except Exception as e:
-                print(f"クライアントからのメッセージ受信中にエラーが発生しました: {e}")
-                break
-
-    def cleanup_inactive_clients(self):
-        # 非アクティブクライアントを定期的に削除する
-        while True:
-            try:
-                current_time = time.time()
-                inactive_clients = [
-                    client
-                    for client, last_seen in self.clients.items()
-                    if current_time - last_seen > self.inactivity_timeout
-                ]
-
-                for client in inactive_clients:
-                    # クライアントに通知メッセージを送信
-                    notification_message = "規定の時間操作がなかったため、一時的にリストから削除されました。リストから削除されている間にルームで交わされたメッセージは確認できませんが、再度メッセージを送信することでいつでもルームに再参加できます。お待ちしています！".encode(
-                        "utf-8"
-                    )
-                    self.server_socket.sendto(notification_message, client)
-                    print(f"非アクティブクライアント {client} を削除しました。")
-                    del self.clients[client]
-            except Exception as e:
-                print(
-                    f"非アクティブクライアントのクリーンアップ中にエラーが発生しました: {e}"
-                )
-            finally:
-                time.sleep(self.inactivity_timeout)
+    # メッセージをリレー
+    def relay_message(self, room_name, sender_token, message):
+        for token in self.rooms[room_name]["clients"]:
+            if token != sender_token:
+                client_ip, client_udp_port = self.clients[token]
+                self.udp_socket.sendto(message, (client_ip, client_udp_port))
 
     def start(self):
-        # サーバーのメインループを開始
-        threading.Thread(target=self.handle_client).start()
         threading.Thread(
-            target=self.cleanup_inactive_clients, daemon=True
-        ).start()  # デーモンスレッド。サーバーが終了するときに自動終了する
+            target=self.listen_udp, daemon=True
+        ).start()  # UDPリスニングを開始
+        self.listen_tcp()  # メインスレッドでTCPリスニングを開始
 
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("\nサーバーを終了します...")
-        finally:
-            self.server_socket.close()
-            print("サーバーソケットをクローズしました。")
-            sys.exit(0)
+    # TCPでの接続要求を待機
+    def listen_tcp(self):
+        while True:
+            client_socket, addr = self.tcp_socket.accept()
+            threading.Thread(
+                target=self.handle_tcp_connection, args=(client_socket, addr)
+            ).start()
+
+    def run(self):
+        print("Starting server...")
+        self.start()
 
 
 if __name__ == "__main__":
-    udp_server = UDPServer()
-    udp_server.start()
+    server = ChatServer()
+    server.run()
