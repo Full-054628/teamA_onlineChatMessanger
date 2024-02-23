@@ -4,6 +4,10 @@ import json
 import random
 import string
 
+# パスワードをハッシュ化し、ソルトを生成する
+import hashlib
+import os
+
 
 class ChatServer:
     # サーバーの設定を初期化
@@ -54,6 +58,14 @@ class ChatServer:
         finally:
             client_socket.close()  # 接続を閉じる
 
+    def hash_password(self, password):
+        # ソルトを生成（32バイトのランダムなデータ）
+        salt = os.urandom(32)
+        # パスワードとソルトを組み合わせてハッシュ化
+        pwdhash = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 100000)
+        # ハッシュ化されたパスワードとソルトを返す
+        return salt + pwdhash
+
     # チャットルームを作成
     def create_room(self, request, addr):
         room_name = request["room_name"]
@@ -62,21 +74,42 @@ class ChatServer:
             # 既に存在するルーム名の場合はエラー
             return {"status": "error", "message": "ルームは既に存在します"}
 
+        # パスワードをハッシュ化
+        hashed_password = self.hash_password(password)
+
         token = self.generate_token()  # トークンを生成
         self.rooms[room_name] = {
-            "password": password,
+            "password": hashed_password,
             "clients": [token],
         }  # ルームを追加
         self.clients[token] = (addr[0], self.udp_port)  # トークンとアドレスを関連付け
         return {"status": "ok", "token": token}  # トークンを含むレスポンスを返す
 
+    def verify_password(self, stored_password, provided_password):
+        # 保存されたパスワードからソルトを抽出（最初の32バイト）
+        salt = stored_password[:32]
+        # 保存されたパスワードのハッシュ部分を抽出
+        stored_hash = stored_password[32:]
+        # 提供されたパスワードを同じソルトでハッシュ化
+        pwdhash = hashlib.pbkdf2_hmac(
+            "sha256", provided_password.encode("utf-8"), salt, 100000
+        )
+        # ハッシュ化されたパスワードを比較
+        return pwdhash == stored_hash
+
     # チャットルームに参加
     def join_room(self, request, addr):
         room_name = request["room_name"]
-        password = request.get("password", "")
-        if room_name not in self.rooms or self.rooms[room_name]["password"] != password:
-            # ルームが存在しないかパスワードが間違っている場合はエラー
-            return {"status": "error", "message": "無効なルーム名またはパスワードです"}
+        provided_password = request.get("password", "")
+        if room_name not in self.rooms:
+            # ルームが存在しない場合はエラー
+            return {"status": "error", "message": "無効なルーム名です"}
+
+        # ルームのパスワードを取得
+        stored_password = self.rooms[room_name]["password"]
+        # パスワードを検証
+        if not self.verify_password(stored_password, provided_password):
+            return {"status": "error", "message": "無効なパスワードです"}
 
         token = self.generate_token()  # トークンを生成
         self.rooms[room_name]["clients"].append(
@@ -100,8 +133,12 @@ class ChatServer:
     # UDPメッセージを処理
     def handle_udp_message(self, message, client_addr):
         try:
-            # メッセージからトークンと本文を分離
-            token, msg = message.decode("utf-8").split(":", 1)
+            # メッセージをJSON形式でデコード
+            decoded_message = json.loads(message.decode("utf-8"))
+            # トークンとメッセージ本文を抽出
+            token = decoded_message["token"]
+            msg = decoded_message["message"]
+
             if token in self.clients:
                 # トークンが有効な場合、メッセージをリレー
                 for room_name, room_info in self.rooms.items():
