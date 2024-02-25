@@ -67,12 +67,14 @@ class ChatServer:
         return {"status": "ok", "token": token}
 
     def generate_token(self):
-        return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+        return "".join(random.choices(string.ascii_letters + string.digits, k=16))
 
     def listen_udp(self):
         while True:
             message, client_addr = self.udp_socket.recvfrom(4096)
-            threading.Thread(target=self.handle_udp_message, args=(message, client_addr)).start()
+            threading.Thread(
+                target=self.handle_udp_message, args=(message, client_addr)
+            ).start()
 
     def handle_udp_message(self, message, client_addr):
         try:
@@ -105,11 +107,14 @@ class ChatServer:
     def listen_tcp(self):
         while True:
             client_socket, addr = self.tcp_socket.accept()
-            threading.Thread(target=self.handle_tcp_connection, args=(client_socket, addr)).start()
+            threading.Thread(
+                target=self.handle_tcp_connection, args=(client_socket, addr)
+            ).start()
 
     def run(self):
         print("サーバーを起動しています...")
         self.start()
+
 
 if __name__ == "__main__":
     server = ChatServer()

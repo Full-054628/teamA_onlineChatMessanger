@@ -2,7 +2,6 @@ import socket
 import threading
 import sys
 import json
-import struct
 
 class ChatClient:
     def __init__(self, server_ip="127.0.0.1", server_port=12345, tcp_port=12346, buffer_size=4096):
@@ -25,35 +24,23 @@ class ChatClient:
         
         operation = input("チャットルームを作成するには 'create'、参加するには 'join' と入力してください: ")
         room_name = input("チャットルーム名を入力してください: ")
-        # ヘッダー情報を構築
-        room_name_encoded = room_name.encode('utf-8')
-        room_name_size = len(room_name_encoded)
-        operation_payload = json.dumps({
+        request = {
             "operation": operation,
             "username": self.username,
             "room_name": room_name
-        }).encode('utf-8')
-        operation_payload_size = len(operation_payload)
+        }
 
-        # ヘッダーの構築と送信
-        header = struct.pack('!B B B 29s', room_name_size, 1 if operation == 'create' else 2, 0, operation_payload_size.to_bytes(29, 'big'))
-        self.tcp_socket.sendall(header + room_name_encoded + operation_payload)
+        self.tcp_socket.sendall(json.dumps(request).encode('utf-8'))
         
         # サーバーからの応答の受信
-        response_header = self.tcp_socket.recv(32)
-        if not response_header:
-            print("サーバーからの応答がありません。")
+        response = json.loads(self.tcp_socket.recv(self.buffer_size).decode('utf-8'))
+        if response["status"] == "ok":
+            self.token = response["token"]
+            print(f"トークン: {self.token} でルーム '{room_name}' に参加しました。")
+        else:
+            print(f"エラー: {response['message']}")
             self.tcp_socket.close()
             sys.exit()
-        
-        # サーバーからの応答を解析
-        room_name_size, operation, state, operation_payload_size_bytes = struct.unpack('!B B B 29s', response_header)
-        operation_payload_size = int.from_bytes(operation_payload_size_bytes.strip(b'\x00'), 'big')
-
-        response_room_name = self.tcp_socket.recv(room_name_size).decode('utf-8')
-        response_payload = self.tcp_socket.recv(operation_payload_size).decode('utf-8')
-
-        print(f"サーバーからの応答: Room Name: {response_room_name}, Operation: {operation}, State: {state}, Payload: {response_payload}")
         
         self.tcp_socket.close()
 
@@ -71,7 +58,6 @@ class ChatClient:
             try:
                 message, _ = self.udp_socket.recvfrom(self.buffer_size)
                 data = json.loads(message.decode('utf-8'))
-                # 受信メッセージを表示し、改行を挿入
                 print(f"\r{data['username']}: {data['message']}\nあなた: ", end="")
                 sys.stdout.flush()
             except Exception as e:
@@ -91,4 +77,4 @@ class ChatClient:
 if __name__ == "__main__":
     client = ChatClient()
     client.prompt_and_connect()
-    client.start()
+    client
