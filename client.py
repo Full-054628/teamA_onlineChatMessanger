@@ -4,36 +4,49 @@ import sys
 import json
 
 class ChatClient:
-    def __init__(self, server_ip="127.0.0.1", server_port=12345, tcp_port=12346, buffer_size=4096):
+    # クライアントの初期化
+    def __init__(self, server_ip="127.0.0.1", server_tcp_port=12346, server_udp_port=12345):
+        # サーバーのIPとポート設定
         self.server_ip = server_ip
-        self.server_port = server_port
-        self.tcp_port = tcp_port
-        self.buffer_size = buffer_size
+        self.server_tcp_port = server_tcp_port
+        self.server_udp_port = server_udp_port
+        
+        # UDPソケットの設定とバインド
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_socket.bind(("", 0))  # ランダムなローカルポートにバインド
+        
+        # TCPソケットの設定
         self.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.username = ""
-        self.token = ""
+        
+        # ユーザー情報
+        self.username = ""  # ユーザー名
+        self.token = ""  # サーバーから受け取るトークン
 
+    # サーバーへの接続とルーム操作の選択
     def prompt_and_connect(self):
         self.username = input("ユーザー名を入力してください: ")
-        if not self.username or len(self.username.encode("utf-8")) > 255:
-            print("ユーザー名が空、または長すぎます。")
+        try:
+            # サーバーへのTCP接続
+            self.tcp_socket.connect((self.server_ip, self.server_tcp_port))
+        except Exception as e:
+            print(f"サーバーへの接続に失敗しました: {e}")
             sys.exit()
-        
-        self.tcp_socket.connect((self.server_ip, self.tcp_port))
-        
+
+        # チャットルームの操作選択とリクエスト送信
+        local_udp_port = self.udp_socket.getsockname()[1]  # UDPポートの取得
         operation = input("チャットルームを作成するには 'create'、参加するには 'join' と入力してください: ")
         room_name = input("チャットルーム名を入力してください: ")
+        password = input("パスワード（任意、'create'の場合）: ") if operation == "create" else input("パスワード: ")
         request = {
             "operation": operation,
-            "username": self.username,
-            "room_name": room_name
+            "room_name": room_name,
+            "password": password,
+            "udp_port": local_udp_port  # UDPポート情報を含む
         }
-
         self.tcp_socket.sendall(json.dumps(request).encode('utf-8'))
+        response = json.loads(self.tcp_socket.recv(1024).decode('utf-8'))
         
-        # サーバーからの応答の受信
-        response = json.loads(self.tcp_socket.recv(self.buffer_size).decode('utf-8'))
+        # サーバーからのレスポンス処理
         if response["status"] == "ok":
             self.token = response["token"]
             print(f"トークン: {self.token} でルーム '{room_name}' に参加しました。")
@@ -41,40 +54,52 @@ class ChatClient:
             print(f"エラー: {response['message']}")
             self.tcp_socket.close()
             sys.exit()
-        
+
         self.tcp_socket.close()
 
+    # メッセージの送信
     def send_message(self):
         while True:
-            msg = input("あなた: ")
-            if msg == "quit":
+            message = input("あなた：")
+            if message.lower() == "quit":
+                print("チャットから退出します。")
                 self.close()
                 break
-            message = {"token": self.token, "message": msg}
-            self.udp_socket.sendto(json.dumps(message).encode('utf-8'), (self.server_ip, self.server_port))
+            packet = {"token": self.token, "message": f"{self.username}: {message}"}
+            self.udp_socket.sendto(json.dumps(packet).encode('utf-8'), (self.server_ip, self.server_udp_port))
 
+    # メッセージの受信と表示
     def receive_message(self):
         while True:
             try:
-                message, _ = self.udp_socket.recvfrom(self.buffer_size)
-                data = json.loads(message.decode('utf-8'))
-                print(f"\r{data['username']}: {data['message']}\nあなた: ", end="")
+                data, _ = self.udp_socket.recvfrom(4096)
+                if not data:
+                    continue
+
+                try:
+                    message = json.loads(data.decode('utf-8'))
+                    print(f"\r{message['message']}\nあなた: ", end="")
+                except json.JSONDecodeError:
+                    print("\nReceived data is not a valid JSON.\nあなた: ", end="")
+                    continue
+
                 sys.stdout.flush()
             except Exception as e:
-                print(f"\r受信中にエラーが発生しました: {e}\nあなた: ", end="")
-                sys.stdout.flush()
+                print(f"\nメッセージの受信中にエラーが発生しました: {e}\nあなた: ", end="")
+                break
 
+    # 通信の開始
     def start(self):
         receiver_thread = threading.Thread(target=self.receive_message, daemon=True)
         receiver_thread.start()
         self.send_message()
 
+    # クライアントの終了処理
     def close(self):
         self.udp_socket.close()
-        print("\nソケットを閉じました。")
         sys.exit()
 
 if __name__ == "__main__":
     client = ChatClient()
     client.prompt_and_connect()
-    client
+    client.start()
