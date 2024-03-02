@@ -19,7 +19,18 @@ class ChatClient:
     # サーバーへの接続とチャットルームの選択
     def prompt_and_connect(self):
         self.tcp_socket.connect((self.server_ip, self.server_tcp_port))  # サーバーへのTCP接続
-        self.username = input("ユーザー名を入力してください: ")
+        while True:
+            self.username = input("ユーザー名を入力してください: ")
+            username_bytes = self.username.encode('utf-8')  # ユーザー名をバイト列としてエンコード
+
+            # ユーザー名のバリデーションチェック
+            if not self.username or len(username_bytes) > 255:
+                error_message = "ユーザー名が空です。" if not self.username else "ユーザー名は255バイト以下である必要があります。"
+                print(error_message)
+                continue  # 不正な入力の場合は、再度ユーザー名の入力を求める
+
+            break  # バリデーションチェックを通過したらループを抜ける
+
         operation = input("チャットルームを作成するには '1'、参加するには '2' と入力してください: ")
         room_name = input("チャットルーム名を入力してください: ")
         password = input("パスワードを入力してください: ")
@@ -34,6 +45,7 @@ class ChatClient:
             print(f"エラー: {response.get('message', 'Unknown error')}")
             self.tcp_socket.close()
             sys.exit()
+
 
     # TCPメッセージの送信とレスポンスの処理
     def send_tcp_message(self, operation, room_name, password=""):
